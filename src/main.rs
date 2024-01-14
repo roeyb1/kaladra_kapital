@@ -1,6 +1,7 @@
-use std::collections::HashMap;
 use std::fs;
+use std::fs::OpenOptions;
 use std::sync::Arc;
+use std::io::prelude::*;
 use serde::{Deserialize, Serialize};
 use reqwest::{Error, Url};
 use reqwest::cookie::Jar;
@@ -124,30 +125,21 @@ async fn get_bulk_results(have: &str, want: &str) -> Result<Vec<TradeExchangeRes
     let cache_string =  fs::read_to_string("cache/requests.csv");
     match cache_string {
         Ok(cache_data) => {
-            // hashmap with have/want concatenated as the key
-            let mut cache: HashMap<String, String> = HashMap::new();
+            let havewant_pair = format!("{}->{}", have, want);
             for line in cache_data.split("\n") {
-                let mut index = 0;
-                let mut key: String = "".to_string();
-                let mut value: String = "".to_string();
-                for line in line.split(",") {
-                    if index < 2 {
-                        key += line;
-                    } else {
-                        value = line.to_string();
-                    }
-                    index += 1;
+                let split_line: Vec<&str> = line.split(",").collect();
+                let key = split_line.get(0).unwrap();
+
+                if *key == havewant_pair {
+                    let value = split_line.get(1).unwrap();
+                    log::debug!("Request for {{have: {}, want: {}}} found in cache!", have, want);
+                    let response: TradeExchangeResponse = serde_json::from_str(
+                        std::str::from_utf8(&*base64::decode(value).unwrap())
+                            .unwrap())
+                        .unwrap();
+                    let result: Vec<TradeExchangeResult> = response.into();
+                    return Ok(result);
                 }
-                cache.insert(key, value);
-            }
-
-            let havewant_pair = format!("{}{}", have, want);
-            if cache.contains_key(&havewant_pair) {
-                log::debug!("Request for {{have: {}, want: {}}} found in cache!", have, want);
-                let response: TradeExchangeResponse = serde_json::from_str(std::str::from_utf8(&base64::decode(cache.get(&havewant_pair).unwrap()).unwrap()).unwrap()).unwrap();
-                let result: Vec<TradeExchangeResult> = response.into();
-
-                return Ok(result);
             }
         }
         _ => {}
@@ -179,7 +171,12 @@ async fn get_bulk_results(have: &str, want: &str) -> Result<Vec<TradeExchangeRes
 
     let result_text = response.text().await?;
 
-    fs::write("cache/requests.csv", format!("{},{},{}", have, want, base64::encode(&result_text))).expect("Unable to write request data to cache");
+    let mut cache_file = OpenOptions::new()
+        .write(true)
+        .append(true)
+        .open("cache/requests.csv")
+        .unwrap();
+    writeln!(cache_file, "{}->{},{}", have, want, base64::encode(&result_text)).expect("Unable to write request data to cache");
 
     let response: TradeExchangeResponse = serde_json::from_str(&result_text).unwrap();
 
