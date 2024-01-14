@@ -1,3 +1,4 @@
+use std::cmp::min;
 use std::iter::Map;
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
@@ -5,9 +6,10 @@ use reqwest::{Error, Url};
 use reqwest::cookie::{CookieStore, Jar};
 use reqwest::header::USER_AGENT;
 use serde_json::from_value;
+use tokio::runtime::Runtime;
 
 static POE_ENDPOINT: &str = "https://api.pathofexile.com";
-static TRADE_ENDPOINT: &str = "http://www.pathofexile.com/api/trade/exchange";
+static TRADE_ENDPOINT: &str = "https://www.pathofexile.com/api/trade/exchange";
 
 // #todo: this should be stored in a config file somewhere
 static SELECTED_LEAGUE: &str = "Affliction";
@@ -59,13 +61,13 @@ struct TradeExchangeRequest {
 #[derive(Deserialize, Debug)]
 struct TradeExchangeExchange {
     currency: String,
-    amount: u32
+    amount: f32
 }
 
 #[derive(Deserialize, Debug)]
 struct TradeExchangeItem {
     currency: String,
-    amount: u32,
+    amount: f32,
     stock: u32
 }
 
@@ -131,7 +133,7 @@ async fn get_bulk_results(have: &str, want: &str) -> Result<Vec<TradeExchangeRes
 
     let response = client
         .post(request_url.clone())
-        .header("User-Agent", "KalandraKapital")
+        .header("User-Agent", "KalandraKapital/1.0")
         .json(&trade_request)
         .send()
         .await?;
@@ -145,9 +147,26 @@ async fn get_bulk_results(have: &str, want: &str) -> Result<Vec<TradeExchangeRes
     Ok(result)
 }
 
-fn main() {
-    use tokio::runtime::Runtime;
+// #todo: this function should return more complex pricing data after doing a full analysis (min/average at the very least)
+fn get_bulk_pricing(have: &str, want: &str) -> f32 {
+    let rt = Runtime::new().unwrap();
+    let result = rt.block_on(async { get_bulk_results(have, want).await.unwrap() });
 
+    let mut min_price = f32::MAX;
+    for listing in result {
+        let exchange = &listing.listing.offers[0].exchange;
+        let item = &listing.listing.offers[0].item;
+
+        let amount_payed = exchange.amount;
+        let amount_received = item.amount;
+
+        min_price = f32::min(amount_payed / amount_received, min_price);
+    }
+
+    min_price
+}
+
+fn main() {
     let rt = Runtime::new().unwrap();
     //let result = rt.block_on(async { get_leagues().await.unwrap() });
 
@@ -159,7 +178,8 @@ fn main() {
     //    panic!("Selected league is not available!")
     //}
 
-    let result = rt.block_on(async { get_bulk_results("mirror", "scrap").await.unwrap() });
 
-    println!("{:#?}", result);
+    let result = get_bulk_pricing("divine", "serrated-fossil");
+
+    println!("It costs {} divine orbs per serrated fossil", result);
 }
