@@ -1,5 +1,7 @@
 mod trade_api;
+mod strat;
 
+use std::cmp::Ordering;
 use std::fs;
 use std::ptr::addr_of_mut;
 use std::sync::Arc;
@@ -7,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use reqwest::{Error, Url};
 use reqwest::cookie::Jar;
 use tokio::runtime::Runtime;
+use crate::trade_api::{get_search_pricing, TradeSearchQuery};
 
 static POE_ENDPOINT: &str = "https://api.pathofexile.com";
 
@@ -46,38 +49,60 @@ async fn get_leagues() -> Result<Leagues, Error> {
 }
 
 fn setup_environment() -> Result<(), String> {
-    match fs::read_dir("cache") {
-        Ok(_) => { Ok(()) }
-        Err(_) => {
-            match fs::create_dir("cache") {
-                Ok(_) => Ok(()),
-                Err(e) => Err(format!("Failed to create request cache directory ({})", e))
-            }
-        }
-    }
+    trade_api::create_request_cache()
 }
 
 static CHAOS_TO_DIVINE_RATIO: f32 = 215.;
 
-#[derive(Debug)]
-struct ChaosOrbPrice {
-    amount: f32
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CurrencyOrbType {
+    Chaos,
+    Divine
 }
 
-#[derive(Debug)]
-struct DivineOrbPrice {
-    amount: f32
+#[derive(Debug, Clone, Copy)]
+struct ItemPrice {
+    amount: f32,
+    currency_orb: CurrencyOrbType
 }
 
-impl From<ChaosOrbPrice> for DivineOrbPrice {
-    fn from(value: ChaosOrbPrice) -> Self {
-        DivineOrbPrice { amount: value.amount / CHAOS_TO_DIVINE_RATIO }
+impl ItemPrice {
+    fn new(amount: f32, currency_orb: CurrencyOrbType) -> Self {
+        ItemPrice { amount, currency_orb }
+    }
+
+    fn as_chaos(&self) -> f32 {
+        match self.currency_orb {
+            CurrencyOrbType::Divine => self.amount * CHAOS_TO_DIVINE_RATIO,
+            CurrencyOrbType::Chaos => self.amount,
+        }
+    }
+
+    fn as_divine(&self) -> f32 {
+        match self.currency_orb {
+            CurrencyOrbType::Divine => self.amount,
+            CurrencyOrbType::Chaos => self.amount / CHAOS_TO_DIVINE_RATIO,
+        }
     }
 }
 
-impl From<DivineOrbPrice> for ChaosOrbPrice {
-    fn from(value: DivineOrbPrice) -> Self {
-        ChaosOrbPrice { amount: value.amount * CHAOS_TO_DIVINE_RATIO }
+impl PartialEq for ItemPrice {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_chaos() == other.as_chaos()
+    }
+}
+
+impl Eq for ItemPrice {}
+
+impl PartialOrd for ItemPrice {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.as_chaos().partial_cmp(&other.as_chaos())
+    }
+}
+
+impl Ord for ItemPrice {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.as_chaos().total_cmp(&other.as_chaos())
     }
 }
 
@@ -108,8 +133,17 @@ fn main() {
     log::info!("It costs {:?} divine orbs per serrated fossil", result.amount);
 
     let result = trade_api::get_bulk_pricing("divine", "primitive-chaotic-resonator");
-    let result_as_chaos: ChaosOrbPrice = result.into();
 
-    log::info!("It costs {} divine orbs per 1-socket resonator", result.amount);
-    log::info!("It costs {} chaos orbs per 1-socket resonator", result_as_chaos.amount);
+    log::info!("It costs {} divine orbs per 1-socket resonator", result.as_divine());
+    log::info!("It costs {} chaos orbs per 1-socket resonator", result.as_chaos());
+
+    let query = TradeSearchQuery {
+        status: trade_api::TradeStatus::online,
+        item_type: "Vivid Vulture".to_string(),
+        filters: vec![],
+    };
+
+    let result = trade_api::get_search_pricing(query.clone()).unwrap();
+
+    log::info!("It costs {} divine orbs for a {}", result.as_divine(), query.item_type);
 }

@@ -2,15 +2,20 @@ use std::cmp::min;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
+use log::warn;
 use reqwest::{Error, Url};
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
-use crate::{build_client, DivineOrbPrice, SELECTED_LEAGUE};
+use crate::{build_client, ItemPrice, SELECTED_LEAGUE};
+use crate::CurrencyOrbType::{Chaos, Divine};
 
-static TRADE_ENDPOINT: &str = "https://www.pathofexile.com/api/trade/exchange";
+static EXCHANGE_ENDPOINT: &str = "https://www.pathofexile.com/api/trade/exchange";
+static SEARCH_ENDPOINT: &str = "https://www.pathofexile.com/api/trade/search";
+static FETCH_ENDPOINT: &str = "https://www.pathofexile.com/api/trade/fetch";
 
-#[derive(Serialize, Debug)]
-enum TradeStatus {
+// #todo: remove pub
+#[derive(Serialize, Clone, Debug)]
+pub enum TradeStatus {
     online,
     onlineleague,
     any,
@@ -32,7 +37,19 @@ enum TradeSortDirection {
 
 #[derive(Serialize, Debug)]
 struct TradeSortMode {
-    have: Option<TradeSortDirection>
+    #[serde(skip_serializing_if = "Option::is_none")]
+    have: Option<TradeSortDirection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    price: Option<TradeSortDirection>
+}
+
+impl TradeSortMode {
+    fn have(dir: TradeSortDirection) -> Self {
+        Self { have: Some(dir), price: None }
+    }
+    fn price(dir: TradeSortDirection) -> Self {
+        Self { have: None, price: Some(dir) }
+    }
 }
 
 #[derive(Serialize, Debug)]
@@ -109,7 +126,7 @@ async fn get_bulk_results(have: &str, want: &str) -> Result<Vec<TradeExchangeRes
         _ => {}
     }
 
-    let request_url = format!("{}/{}", TRADE_ENDPOINT, SELECTED_LEAGUE).parse::<Url>().unwrap();
+    let request_url = format!("{}/{}", EXCHANGE_ENDPOINT, SELECTED_LEAGUE).parse::<Url>().unwrap();
 
     let client = build_client(&request_url)?;
 
@@ -120,7 +137,7 @@ async fn get_bulk_results(have: &str, want: &str) -> Result<Vec<TradeExchangeRes
             want: vec![want.to_string()],
             minimum: None,
         },
-        sort: TradeSortMode { have: Some(TradeSortDirection::asc) },
+        sort: TradeSortMode::have(TradeSortDirection::asc),
         engine: "new".to_string(),
     };
 
@@ -149,8 +166,112 @@ async fn get_bulk_results(have: &str, want: &str) -> Result<Vec<TradeExchangeRes
     Ok(result)
 }
 
+#[derive(Serialize, Clone, Debug)]
+pub struct TradeSearchFilter {
+
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct TradeSearchQuery {
+    pub status: TradeStatus,
+    #[serde(rename="type")]
+    pub item_type: String,
+    pub filters: Vec<TradeSearchFilter>,
+}
+
+#[derive(Serialize, Debug)]
+struct TradeSearchRequest {
+    query: TradeSearchQuery,
+    sort: TradeSortMode,
+}
+
+#[derive(Deserialize, Debug)]
+struct TradeSearchPrice {
+    amount: f32,
+    currency: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct TradeSearchListing {
+    price: TradeSearchPrice
+}
+
+#[derive(Deserialize, Debug)]
+struct TradeSearchItem {
+    // #todo: do we need this?
+}
+
+#[derive(Deserialize, Debug)]
+struct TradeSearchResult {
+    id: String,
+    listing: TradeSearchListing,
+    item: TradeSearchItem,
+}
+
+#[derive(Deserialize, Debug)]
+struct TradeFetchResponse {
+    result: Vec<TradeSearchResult>,
+}
+
+#[derive(Deserialize, Debug)]
+struct TradeSearchResponse {
+    id: String,
+    result: Vec<String>,
+    total: u32
+}
+
+async fn get_search_results(query: TradeSearchQuery) -> Result<Vec<TradeSearchResult>, Error> {
+    let request_url = format!("{}/{}", SEARCH_ENDPOINT, SELECTED_LEAGUE).parse::<Url>().unwrap();
+
+    let client = build_client(&request_url)?;
+
+    let trade_request = TradeSearchRequest {
+        query: query,
+        sort: TradeSortMode::price(TradeSortDirection::asc)
+    };
+
+    println!("{}", serde_json::to_string(&trade_request).unwrap());
+
+    log::debug!("Submitting request to trade API...");
+
+    let response = client
+        .post(request_url.clone())
+        .header("User-Agent", "KalandraKapital/1.0")
+        .json(&trade_request)
+        .send()
+        .await?;
+
+    let response: TradeSearchResponse = response.json().await?;
+
+    let fetch_results = response.result[0..10].join(",");
+
+    let response = client
+        .get(format!("{FETCH_ENDPOINT}/{fetch_results}?q={}", response.id))
+        .header("User-Agent", "KalandraKapital/1.0")
+        .send()
+        .await?;
+
+    // #todo: cache
+
+    let response: TradeFetchResponse = response.json().await?;
+
+    Ok(response.result)
+}
+
+pub fn create_request_cache() -> Result<(), String> {
+    match fs::read_dir("cache") {
+        Ok(_) => { Ok(()) }
+        Err(_) => {
+            match fs::create_dir("cache") {
+                Ok(_) => Ok(()),
+                Err(e) => Err(format!("Failed to create request cache directory ({})", e))
+            }
+        }
+    }
+}
+
 // #todo: this function should return more complex pricing data after doing a full analysis (min/average at the very least)
-pub fn get_bulk_pricing(have: &str, want: &str) -> DivineOrbPrice {
+pub fn get_bulk_pricing(have: &str, want: &str) -> ItemPrice {
     let rt = Runtime::new().unwrap();
     let result = rt.block_on(async { get_bulk_results(have, want).await.unwrap() });
 
@@ -165,5 +286,22 @@ pub fn get_bulk_pricing(have: &str, want: &str) -> DivineOrbPrice {
         min_price = f32::min(amount_payed / amount_received, min_price);
     }
 
-    DivineOrbPrice { amount: min_price }
+    ItemPrice::new(min_price, Divine)
+}
+
+pub fn get_search_pricing(query: TradeSearchQuery) -> Option<ItemPrice> {
+    let rt = Runtime::new().unwrap();
+    let query_results = rt.block_on(async { get_search_results(query).await.unwrap() });
+
+    let mut prices: Vec<ItemPrice> = Vec::new();
+    for result in query_results {
+        println!("{} {}", result.listing.price.amount, result.listing.price.currency);
+        match result.listing.price.currency.as_str() {
+            "divine" => prices.push(ItemPrice::new(result.listing.price.amount, Divine)),
+            "chaos" => prices.push(ItemPrice::new(result.listing.price.amount, Chaos)),
+            _ => {}
+        }
+    }
+
+    prices.iter().min().cloned()
 }
