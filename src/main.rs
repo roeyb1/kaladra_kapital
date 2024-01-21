@@ -2,13 +2,14 @@ mod trade_api;
 mod strat;
 
 use std::cmp::Ordering;
-use std::fs;
-use std::ptr::addr_of_mut;
+use std::ops;
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use reqwest::{Error, Url};
 use reqwest::cookie::Jar;
 use tokio::runtime::Runtime;
+use crate::CurrencyOrbType::{Chaos, Divine};
+use crate::strat::{compute_profitability, read_strat_from_file};
 use crate::trade_api::{get_search_pricing, TradeSearchQuery};
 
 static POE_ENDPOINT: &str = "https://api.pathofexile.com";
@@ -61,14 +62,18 @@ enum CurrencyOrbType {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ItemPrice {
+struct Price {
     amount: f32,
     currency_orb: CurrencyOrbType
 }
 
-impl ItemPrice {
+impl Price {
     fn new(amount: f32, currency_orb: CurrencyOrbType) -> Self {
-        ItemPrice { amount, currency_orb }
+        Price { amount, currency_orb }
+    }
+
+    fn zero() -> Self {
+        Price { amount: 0., currency_orb: Divine }
     }
 
     fn as_chaos(&self) -> f32 {
@@ -86,21 +91,58 @@ impl ItemPrice {
     }
 }
 
-impl PartialEq for ItemPrice {
+impl ops::Add<Self> for Price {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        let self_in_divines = self.as_divine();
+        let rhs_in_divines = rhs.as_divine();
+
+        Price::new(self_in_divines + rhs_in_divines, Divine)
+    }
+}
+
+impl ops::Sub<Self> for Price {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        let self_in_divines = self.as_divine();
+        let rhs_in_divines = rhs.as_divine();
+
+        Price::new(self_in_divines - rhs_in_divines, Divine)
+    }
+}
+
+impl ops::AddAssign<Self> for Price {
+    fn add_assign(&mut self, rhs: Self) {
+        match self.currency_orb {
+            Chaos => {
+                let rhs_as_chaos = rhs.as_chaos();
+                self.amount += rhs_as_chaos;
+            }
+            Divine => {
+                let rhs_as_divines = rhs.as_divine();
+                self.amount += rhs_as_divines;
+            }
+        }
+    }
+}
+
+impl PartialEq for Price {
     fn eq(&self, other: &Self) -> bool {
         self.as_chaos() == other.as_chaos()
     }
 }
 
-impl Eq for ItemPrice {}
+impl Eq for Price {}
 
-impl PartialOrd for ItemPrice {
+impl PartialOrd for Price {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         self.as_chaos().partial_cmp(&other.as_chaos())
     }
 }
 
-impl Ord for ItemPrice {
+impl Ord for Price {
     fn cmp(&self, other: &Self) -> Ordering {
         self.as_chaos().total_cmp(&other.as_chaos())
     }
@@ -128,22 +170,26 @@ fn main() {
     //    panic!("Selected league is not available!")
     //}
 
-    let result = trade_api::get_bulk_pricing("divine", "serrated-fossil");
+    //let result = trade_api::get_bulk_pricing("divine", "serrated-fossil");
 
-    log::info!("It costs {:?} divine orbs per serrated fossil", result.amount);
+    //log::info!("It costs {:?} divine orbs per serrated fossil", result.amount);
 
-    let result = trade_api::get_bulk_pricing("divine", "primitive-chaotic-resonator");
+    //let result = trade_api::get_bulk_pricing("divine", "primitive-chaotic-resonator");
 
-    log::info!("It costs {} divine orbs per 1-socket resonator", result.as_divine());
-    log::info!("It costs {} chaos orbs per 1-socket resonator", result.as_chaos());
+    //log::info!("It costs {} divine orbs per 1-socket resonator", result.as_divine());
+    //log::info!("It costs {} chaos orbs per 1-socket resonator", result.as_chaos());
 
-    let query = TradeSearchQuery {
-        status: trade_api::TradeStatus::online,
-        item_type: "Vivid Vulture".to_string(),
-        filters: vec![],
-    };
+    //let query = TradeSearchQuery {
+    //    status: trade_api::TradeStatus::online,
+    //    item_type: "Vivid Vulture".to_string(),
+    //    filters: vec![],
+    //};
 
-    let result = trade_api::get_search_pricing(query.clone()).unwrap();
+    //let result = trade_api::get_search_pricing(query.clone()).unwrap();
 
-    log::info!("It costs {} divine orbs for a {}", result.as_divine(), query.item_type);
+    //log::info!("It costs {} divine orbs for a {}", result.as_divine(), query.item_type);
+
+    let strat = read_strat_from_file("strategies/beast_memory.json").unwrap();
+
+    log::info!("{:?}", compute_profitability(&strat));
 }

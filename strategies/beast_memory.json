@@ -1,0 +1,46 @@
+{
+  "inputs": [
+    {
+      "term": "Einhar's Memory of Harvest Beasts",
+      "bulk": false
+    }
+  ],
+  "outputs": [
+    {
+      "name": "Vivid Vulture",
+      "bulk": false
+    },
+    {
+      "name": "Vivid Watcher",
+      "bulk": false
+    },
+    {
+      "name": "Vivid Abberarach",
+      "bulk": false
+    },
+    {
+      "name": "Wild Hellion Alpha",
+      "bulk": false
+    },
+    {
+      "name": "Wild Bristle Matron",
+      "bulk": false
+    },
+    {
+      "name": "Wild Brambleback",
+      "bulk": false
+    },
+    {
+      "name": "Primal Rhex Matriarch",
+      "bulk": false
+    },
+    {
+      "name": "Primal Crushclaw",
+      "bulk": false
+    },
+    {
+      "name": "Primal Cystcaller",
+      "bulk": false
+    }
+  ]
+}
